@@ -20,6 +20,7 @@ class BPlusTree {
   bool Search(key_t key, value_t *out_value);
   bool Delete(key_t key);
   void RangeScan(key_t start, key_t end, std::vector<std::pair<key_t, value_t>> *out);
+  BufferPoolManager *GetBufferPoolManager() const { return buffer_pool_manager_; }
 
  private:
   BPlusTreeNode ReadNode(page_id_t page_id);
