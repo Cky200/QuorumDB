@@ -11,7 +11,7 @@ namespace quorumdb {
 
 class QueryEngine {
  public:
-  explicit QueryEngine(BPlusTree *index);
+  explicit QueryEngine(BPlusTree *index, WALManager *wal_manager = nullptr);
 
   bool Insert(std::int64_t id, const std::string &name, std::int64_t value);
   std::optional<Record> SelectById(std::int64_t id);

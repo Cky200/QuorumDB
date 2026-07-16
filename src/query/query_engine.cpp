@@ -2,7 +2,7 @@
 
 namespace quorumdb {
 
-QueryEngine::QueryEngine(BPlusTree *index) : table_(index) {}
+QueryEngine::QueryEngine(BPlusTree *index, WALManager *wal_manager) : table_(index, wal_manager) {}
 
 bool QueryEngine::Insert(std::int64_t id, const std::string &name, std::int64_t value) {
   return table_.Insert({id, name, value});
