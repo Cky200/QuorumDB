@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(quorumdb_core STATIC
+    src/storage/buffer_pool_manager.cpp
     src/storage/disk_manager.cpp
 )
 target_include_directories(quorumdb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -20,5 +21,10 @@ add_executable(test_disk_manager test/test_disk_manager.cpp)
 target_link_libraries(test_disk_manager PRIVATE quorumdb_core)
 target_compile_options(test_disk_manager PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_buffer_pool_manager test/test_buffer_pool_manager.cpp)
+target_link_libraries(test_buffer_pool_manager PRIVATE quorumdb_core)
+target_compile_options(test_buffer_pool_manager PRIVATE -Wall -Wextra -Wpedantic)
+
 enable_testing()
 add_test(NAME disk_manager COMMAND test_disk_manager)
+add_test(NAME buffer_pool_manager COMMAND test_buffer_pool_manager)
