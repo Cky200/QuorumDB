@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(QuorumDB LANGUAGES CXX)
 
+find_package(Threads REQUIRED)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -9,12 +11,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(quorumdb_core STATIC
     src/query/query_engine.cpp
     src/query/table.cpp
+    src/rpc/rpc_client.cpp
+    src/rpc/rpc_server.cpp
     src/storage/bplus_tree.cpp
     src/storage/buffer_pool_manager.cpp
     src/storage/disk_manager.cpp
     src/storage/wal_manager.cpp
 )
 target_include_directories(quorumdb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(quorumdb_core PUBLIC Threads::Threads)
 target_compile_options(quorumdb_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(quorumdb src/main.cpp)
@@ -41,9 +46,14 @@ add_executable(test_wal_manager test/test_wal_manager.cpp)
 target_link_libraries(test_wal_manager PRIVATE quorumdb_core)
 target_compile_options(test_wal_manager PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_rpc test/test_rpc.cpp)
+target_link_libraries(test_rpc PRIVATE quorumdb_core)
+target_compile_options(test_rpc PRIVATE -Wall -Wextra -Wpedantic)
+
 enable_testing()
 add_test(NAME disk_manager COMMAND test_disk_manager)
 add_test(NAME buffer_pool_manager COMMAND test_buffer_pool_manager)
 add_test(NAME bplus_tree COMMAND test_bplus_tree)
 add_test(NAME query_engine COMMAND test_query_engine)
 add_test(NAME wal_manager COMMAND test_wal_manager)
+add_test(NAME rpc COMMAND test_rpc)
