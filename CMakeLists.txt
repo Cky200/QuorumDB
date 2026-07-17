@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(quorumdb_core STATIC
     src/query/query_engine.cpp
     src/query/table.cpp
+    src/raft/raft_node.cpp
     src/rpc/rpc_client.cpp
     src/rpc/rpc_server.cpp
     src/storage/bplus_tree.cpp
@@ -50,6 +51,10 @@ add_executable(test_rpc test/test_rpc.cpp)
 target_link_libraries(test_rpc PRIVATE quorumdb_core)
 target_compile_options(test_rpc PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_raft_election test/test_raft_election.cpp)
+target_link_libraries(test_raft_election PRIVATE quorumdb_core)
+target_compile_options(test_raft_election PRIVATE -Wall -Wextra -Wpedantic)
+
 enable_testing()
 add_test(NAME disk_manager COMMAND test_disk_manager)
 add_test(NAME buffer_pool_manager COMMAND test_buffer_pool_manager)
@@ -57,3 +62,4 @@ add_test(NAME bplus_tree COMMAND test_bplus_tree)
 add_test(NAME query_engine COMMAND test_query_engine)
 add_test(NAME wal_manager COMMAND test_wal_manager)
 add_test(NAME rpc COMMAND test_rpc)
+add_test(NAME raft_election COMMAND test_raft_election)
