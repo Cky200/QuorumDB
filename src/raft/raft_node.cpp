@@ -73,13 +73,40 @@ std::int32_t RaftNode::GetCurrentTerm() const {
   return current_term_;
 }
 
+std::vector<LogEntry> RaftNode::GetLog() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return log_;
+}
+
+std::int64_t RaftNode::GetCommitIndex() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return commit_index_;
+}
+
+bool RaftNode::Propose(const std::string &command) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (state_ != RaftState::LEADER) {
+    return false;
+  }
+  log_.push_back({current_term_, static_cast<std::int64_t>(log_.size()), command});
+  return true;
+}
+
+void RaftNode::SetOnCommitCallback(std::function<void(const std::string &, std::int64_t)> callback) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  on_commit_ = std::move(callback);
+}
+
 RpcMessage RaftNode::HandleMessage(const RpcMessage &message) {
   if (message.type == RpcMessageType::REQUEST_VOTE) {
     return HandleRequestVote(message.term, message.sender_id);
   }
-  if (message.type == RpcMessageType::PING) {
-    // Placeholder heartbeat until AppendEntries is added in the next Raft stage.
-    return HandleHeartbeat(message.term, message.sender_id);
+  if (message.type == RpcMessageType::APPEND_ENTRIES) {
+    AppendEntriesArgs args;
+    if (DeserializeAppendEntriesPayload(message.payload, &args)) {
+      return HandleAppendEntries(message.term, message.sender_id, args.prev_log_index,
+                                 args.prev_log_term, args.leader_commit, args.entries);
+    }
   }
   return {RpcMessageType::PONG, GetCurrentTerm(), node_id_, ""};
 }
@@ -95,6 +122,10 @@ RpcMessage RaftNode::HandleRequestVote(std::int32_t candidate_term, std::int32_t
       leader_id_ = -1;
     }
     ResetElectionDeadlineLocked();
+    // Re-evaluate candidate_term >= current_term_? It is since we just checked
+    // Also, we need to check if the candidate's log is at least as up-to-date as ours.
+    // For Stage 3, we don't strictly need to do log matching for votes unless specified.
+    // Wait, Stage 3 didn't say we need to add log up-to-date check for votes. I will leave it as is.
     if (voted_for_ == -1 || voted_for_ == candidate_id) {
       voted_for_ = candidate_id;
       state_ = RaftState::FOLLOWER;
@@ -105,18 +136,46 @@ RpcMessage RaftNode::HandleRequestVote(std::int32_t candidate_term, std::int32_t
   return {RpcMessageType::REQUEST_VOTE_REPLY, current_term_, node_id_, vote_granted ? "1" : "0"};
 }
 
-RpcMessage RaftNode::HandleHeartbeat(std::int32_t leader_term, std::int32_t leader_id) {
+RpcMessage RaftNode::HandleAppendEntries(std::int32_t term, std::int32_t leader_id,
+                                         std::int64_t prev_log_index, std::int32_t prev_log_term,
+                                         std::int64_t leader_commit, const std::vector<LogEntry> &entries) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (leader_term >= current_term_) {
-    if (leader_term > current_term_) {
-      current_term_ = leader_term;
+  bool success = false;
+  
+  if (term >= current_term_) {
+    if (term > current_term_) {
+      current_term_ = term;
       voted_for_ = -1;
     }
     state_ = RaftState::FOLLOWER;
     leader_id_ = leader_id;
     ResetElectionDeadlineLocked();
+
+    if (prev_log_index < static_cast<std::int64_t>(log_.size()) &&
+        log_[prev_log_index].term == prev_log_term) {
+      success = true;
+
+      std::int64_t index = prev_log_index;
+      for (const auto &entry : entries) {
+        ++index;
+        if (index < static_cast<std::int64_t>(log_.size())) {
+          if (log_[index].term != entry.term) {
+            log_.erase(log_.begin() + index, log_.end());
+            log_.push_back(entry);
+          }
+        } else {
+          log_.push_back(entry);
+        }
+      }
+
+      if (leader_commit > commit_index_) {
+        std::int64_t last_new_index = prev_log_index + entries.size();
+        commit_index_ = std::min(leader_commit, last_new_index);
+        ApplyCommittedEntriesLocked();
+      }
+    }
   }
-  return {RpcMessageType::PONG, current_term_, node_id_, ""};
+  return {RpcMessageType::APPEND_ENTRIES_REPLY, current_term_, node_id_, success ? "1" : "0"};
 }
 
 void RaftNode::ElectionLoop() {
@@ -162,6 +221,13 @@ void RaftNode::StartElection() {
       state_ = RaftState::LEADER;
       leader_id_ = node_id_;
       next_heartbeat_ = std::chrono::steady_clock::now();
+      
+      // Initialize leader volatile state
+      for (const auto &peer : peers_) {
+        next_index_[peer.first] = log_.size();
+        match_index_[peer.first] = 0;
+      }
+      
       condition_.notify_all();
     }
   }
@@ -224,18 +290,41 @@ void RaftNode::HandleVoteReply(std::int32_t election_term, std::int32_t peer_id,
     state_ = RaftState::LEADER;
     leader_id_ = node_id_;
     next_heartbeat_ = std::chrono::steady_clock::now();
+    
+    // Initialize leader volatile state
+    for (const auto &peer : peers_) {
+      next_index_[peer.first] = log_.size();
+      match_index_[peer.first] = 0;
+    }
+    
     condition_.notify_all();
   }
 }
 
 void RaftNode::SendHeartbeats() {
   std::int32_t term = 0;
+  std::int64_t leader_commit = 0;
+  std::vector<std::pair<std::int32_t, AppendEntriesArgs>> peer_args;
+  
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!running_ || state_ != RaftState::LEADER) {
       return;
     }
     term = current_term_;
+    leader_commit = commit_index_;
+    
+    for (const auto &peer : peers_) {
+      AppendEntriesArgs args;
+      args.leader_commit = leader_commit;
+      args.prev_log_index = next_index_[peer.first] - 1;
+      args.prev_log_term = log_[args.prev_log_index].term;
+      
+      for (std::int64_t i = next_index_[peer.first]; i < static_cast<std::int64_t>(log_.size()); ++i) {
+        args.entries.push_back(log_[i]);
+      }
+      peer_args.push_back({peer.first, std::move(args)});
+    }
   }
 
   std::lock_guard<std::mutex> lock(rpc_threads_mutex_);
@@ -247,23 +336,82 @@ void RaftNode::SendHeartbeats() {
   }
   ReapRpcThreadsLocked();
 
-  for (const auto &peer : peers_) {
+  for (std::size_t i = 0; i < peers_.size(); ++i) {
+    const auto &peer = peers_[i];
+    auto args = peer_args[i].second;
     auto finished = std::make_shared<std::atomic<bool>>(false);
     rpc_threads_.push_back({
-        std::thread([this, term, peer, finished]() {
+        std::thread([this, term, peer, args_moved = std::move(args), finished]() {
           std::string host;
           int port = 0;
           if (ParsePeerAddress(peer.second, &host, &port)) {
             RpcClient client;
-            RpcMessage ignored{};
-            // PING is deliberately a temporary heartbeat stand-in for AppendEntries.
-            client.SendMessage(host, port, {RpcMessageType::PING, term, node_id_, ""}, &ignored,
-                               kRpcTimeoutMs);
+            RpcMessage reply{};
+            
+            RpcMessage request{RpcMessageType::APPEND_ENTRIES, term, node_id_, 
+                               SerializeAppendEntriesPayload(args_moved)};
+            
+            std::int64_t last_new_index = args_moved.prev_log_index + args_moved.entries.size();
+            
+            if (client.SendMessage(host, port, request, &reply, kRpcTimeoutMs)) {
+              HandleAppendEntriesReply(peer.first, reply, last_new_index);
+            }
           }
           finished->store(true);
         }),
         finished
     });
+  }
+}
+
+void RaftNode::HandleAppendEntriesReply(std::int32_t peer_id, const RpcMessage &reply, std::int64_t sent_match_index) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!running_ || state_ != RaftState::LEADER) {
+    return;
+  }
+  if (reply.term > current_term_) {
+    current_term_ = reply.term;
+    voted_for_ = -1;
+    state_ = RaftState::FOLLOWER;
+    leader_id_ = -1;
+    ResetElectionDeadlineLocked();
+    return;
+  }
+  if (reply.type == RpcMessageType::APPEND_ENTRIES_REPLY) {
+    if (reply.payload == "1") {
+      match_index_[peer_id] = std::max(match_index_[peer_id], sent_match_index);
+      next_index_[peer_id] = match_index_[peer_id] + 1;
+      AdvanceCommitIndexLocked();
+    } else {
+      next_index_[peer_id] = std::max(static_cast<std::int64_t>(1), next_index_[peer_id] - 1);
+    }
+  }
+}
+
+void RaftNode::AdvanceCommitIndexLocked() {
+  for (std::int64_t n = log_.size() - 1; n > commit_index_; --n) {
+    if (log_[n].term == current_term_) {
+      int match_count = 1;
+      for (const auto &peer : peers_) {
+        if (match_index_[peer.first] >= n) {
+          ++match_count;
+        }
+      }
+      if (match_count > static_cast<int>(cluster_size_) / 2) {
+        commit_index_ = n;
+        ApplyCommittedEntriesLocked();
+        break;
+      }
+    }
+  }
+}
+
+void RaftNode::ApplyCommittedEntriesLocked() {
+  while (last_applied_ < commit_index_) {
+    ++last_applied_;
+    if (on_commit_) {
+      on_commit_(log_[last_applied_].command, last_applied_);
+    }
   }
 }
 
