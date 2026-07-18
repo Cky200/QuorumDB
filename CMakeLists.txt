@@ -12,6 +12,8 @@ add_library(quorumdb_core STATIC
     src/query/query_engine.cpp
     src/query/table.cpp
     src/raft/raft_node.cpp
+    src/raft/state_machine.cpp
+    src/raft/raft_server.cpp
     src/rpc/rpc_client.cpp
     src/rpc/rpc_server.cpp
     src/storage/bplus_tree.cpp
@@ -59,6 +61,10 @@ add_executable(test_raft_replication test/test_raft_replication.cpp)
 target_link_libraries(test_raft_replication PRIVATE quorumdb_core)
 target_compile_options(test_raft_replication PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_raft_state_machine test/test_raft_state_machine.cpp)
+target_link_libraries(test_raft_state_machine PRIVATE quorumdb_core)
+target_compile_options(test_raft_state_machine PRIVATE -Wall -Wextra -Wpedantic)
+
 enable_testing()
 add_test(NAME disk_manager COMMAND test_disk_manager)
 add_test(NAME buffer_pool_manager COMMAND test_buffer_pool_manager)
@@ -68,3 +74,4 @@ add_test(NAME wal_manager COMMAND test_wal_manager)
 add_test(NAME rpc COMMAND test_rpc)
 add_test(NAME raft_election COMMAND test_raft_election)
 add_test(NAME raft_replication COMMAND test_raft_replication)
+add_test(NAME raft_state_machine COMMAND test_raft_state_machine)
